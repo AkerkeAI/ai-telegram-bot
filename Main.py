@@ -3,17 +3,18 @@ import numpy as np
 import tensorflow_hub as hub
 import librosa
 import csv
+import requests
 from flask import Flask, request
-import telegram
 
 TOKEN = os.getenv("TOKEN")
-URL = os.getenv("URL")  # Railway public URL
+URL = os.getenv("URL")  # https://xxxx.up.railway.app
 
 if not TOKEN:
     raise ValueError("TOKEN не найден")
-
 if not URL:
-    raise ValueError("URL не найден (Railway domain)")
+    raise ValueError("URL не найден")
+
+API = f"https://api.telegram.org/bot{TOKEN}"
 
 print("Загружаю модель...")
 model = hub.load("https://tfhub.dev/google/yamnet/1")
@@ -31,9 +32,13 @@ print("Модель готова")
 
 IMPORTANT_SOUNDS = [
     "siren", "alarm", "gunshot", "explosion",
-    "fire", "car horn", "dog bark"
+    "fire", "emergency", "car horn", "dog"
 ]
 
+app = Flask(__name__)
+
+
+# ---------------- AI ----------------
 def analyze_audio(file_path):
     waveform, sr = librosa.load(file_path, sr=16000)
 
@@ -49,44 +54,87 @@ def analyze_audio(file_path):
     return sound, confidence
 
 
-bot = telegram.Bot(token=TOKEN)
-app = Flask(__name__)
+# ---------------- Telegram helpers ----------------
+def send_message(chat_id, text):
+    requests.post(f"{API}/sendMessage", json={
+        "chat_id": chat_id,
+        "text": text
+    })
 
 
+def download_file(file_id):
+    r = requests.get(f"{API}/getFile?file_id={file_id}")
+    file_path = r.json()["result"]["file_path"]
+
+    file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_path}"
+    audio_data = requests.get(file_url)
+
+    local_path = "audio.ogg"
+    with open(local_path, "wb") as f:
+        f.write(audio_data.content)
+
+    return local_path
+
+
+# ---------------- WEBHOOK ----------------
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
-    update = telegram.Update.de_json(request.get_json(force=True), bot)
+    data = request.get_json()
 
-    if update.message and (update.message.voice or update.message.audio):
+    if "message" not in data:
+        return "ok"
 
-        msg = update.message
-        audio = msg.voice or msg.audio
+    msg = data["message"]
+    chat_id = msg["chat"]["id"]
 
-        file = bot.get_file(audio.file_id)
-        file_path = "audio.ogg"
-        file.download_to_drive(file_path)
+    file_id = None
 
-        sound, confidence = analyze_audio(file_path)
+    if "voice" in msg:
+        file_id = msg["voice"]["file_id"]
+    elif "audio" in msg:
+        file_id = msg["audio"]["file_id"]
+
+    if not file_id:
+        send_message(chat_id, "Отправь голосовое или аудио")
+        return "ok"
+
+    send_message(chat_id, "🎧 Анализирую звук...")
+
+    try:
+        path = download_file(file_id)
+        sound, confidence = analyze_audio(path)
 
         if confidence < 0.4:
-            msg.reply_text("🔍 Не удалось точно распознать звук")
+            send_message(chat_id, "🔍 Не удалось точно распознать звук")
             return "ok"
 
-        if any(x in sound.lower() for x in IMPORTANT_SOUNDS):
+        is_danger = any(x in sound.lower() for x in IMPORTANT_SOUNDS)
+
+        if is_danger:
             text = f"🚨 ОПАСНО: {sound} ({confidence:.2f})"
         else:
             text = f"🟢 Безопасно: {sound} ({confidence:.2f})"
 
-        msg.reply_text(text)
+        send_message(chat_id, text)
+
+    except Exception as e:
+        send_message(chat_id, f"Ошибка: {str(e)}")
 
     return "ok"
 
 
+# ---------------- HEALTH CHECK ----------------
 @app.route("/", methods=["GET"])
-def index():
+def home():
     return "Bot is running"
 
 
+# ---------------- SET WEBHOOK ----------------
+def set_webhook():
+    url = f"{URL}/{TOKEN}"
+    requests.get(f"{API}/setWebhook?url={url}")
+
+
 if __name__ == "__main__":
-    bot.set_webhook(url=f"{URL}/{TOKEN}")
+    set_webhook()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
