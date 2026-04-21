@@ -49,7 +49,6 @@ if __name__ == "__main__":
 
         await telegram_app.bot.set_webhook(url=f"{URL}/{TOKEN}")
 
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(on_start())
+    asyncio.run(on_start())
 
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
