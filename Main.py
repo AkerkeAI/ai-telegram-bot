@@ -15,23 +15,34 @@ TOKEN = os.getenv("TOKEN")
 if not TOKEN:
     raise ValueError("TOKEN не найден!")
 
-# ================== LOAD MODEL ==================
-print("Загружаю модель...")
-model = hub.load('https://tfhub.dev/google/yamnet/1')
+app = Flask(__name__)
 
-class_map_path = model.class_map_path().numpy()
-class_names = []
+# ================== MODEL (ленивая загрузка) ==================
+model = None
+class_names = None
 
-with open(class_map_path, encoding='utf-8') as f:
-    reader = csv.reader(f)
-    next(reader)
-    for row in reader:
-        class_names.append(row[2])
+def load_model():
+    global model, class_names
 
-print("Модель готова")
+    if model is None:
+        print("Загружаю модель...")
+        model = hub.load('https://tfhub.dev/google/yamnet/1')
+
+        class_map_path = model.class_map_path().numpy()
+        class_names = []
+
+        with open(class_map_path, encoding='utf-8') as f:
+            reader = csv.reader(f)
+            next(reader)
+            for row in reader:
+                class_names.append(row[2])
+
+        print("Модель готова")
 
 # ================== AUDIO ==================
 def analyze_audio(file_path):
+    load_model()
+
     waveform, sr = librosa.load(file_path, sr=16000)
     scores, _, _ = model(waveform)
     scores_np = scores.numpy()
@@ -46,7 +57,8 @@ def analyze_audio(file_path):
 
 IMPORTANT_SOUNDS = [
     "siren", "alarm", "gunshot", "explosion",
-    "emergency vehicle", "fire alarm", "car horn"
+    "emergency vehicle", "fire alarm", "car horn",
+    "dog", "bark"  # 🐶 добавили лай собак
 ]
 
 # ================== TELEGRAM ==================
@@ -84,9 +96,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 telegram_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
 
-# ================== FLASK ==================
-app = Flask(__name__)
-
+# ================== ROUTES ==================
 @app.route("/")
 def home():
     return "AIQYN бот работает ✅"
@@ -99,6 +109,6 @@ def webhook():
 
 # ================== START ==================
 if __name__ == "__main__":
-    telegram_app.initialize()  # ВАЖНО
+    asyncio.run(telegram_app.initialize())  # ✅ исправлено
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
