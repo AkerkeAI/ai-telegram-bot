@@ -26,11 +26,13 @@ telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
 
 # --- webhook endpoint ---
-@app.route(f"/{TOKEN}", methods=["POST"])
+@app.route("/", methods=["POST"])
 def webhook():
-    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
     import asyncio
+
+    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
     asyncio.run(telegram_app.process_update(update))
+
     return "ok"
 
 
@@ -47,7 +49,7 @@ if __name__ == "__main__":
         await telegram_app.initialize()
         await telegram_app.start()
 
-        await telegram_app.bot.set_webhook(url=f"{URL}/{TOKEN}")
+        await telegram_app.bot.set_webhook(url=f"{URL}")
 
     asyncio.run(on_start())
 
