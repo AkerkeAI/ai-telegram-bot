@@ -1,50 +1,101 @@
 import os
-import asyncio
-from flask import Flask, request
+import numpy as np
+import tensorflow_hub as hub
+import librosa
+import csv
+
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
-TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+# токен из Railway
+TOKEN = os.getenv("TOKEN")
 
-app = Flask(__name__)
+if not TOKEN:
+    raise ValueError("TOKEN не найден в Railway Variables")
 
-# 🐶 опасные звуки (добавили лай собаки)
-danger_keywords = ["signal", "alarm", "cry", "scream", "dog bark"]
+print("Загружаю модель...")
+model = hub.load("https://tfhub.dev/google/yamnet/1")
 
-# 🔊 обработка сообщений
+# классы звуков
+class_map_path = model.class_map_path().numpy()
+class_names = []
+
+with open(class_map_path, encoding="utf-8") as f:
+    reader = csv.reader(f)
+    next(reader)
+    for row in reader:
+        class_names.append(row[2])
+
+print("Модель готова")
+
+IMPORTANT_SOUNDS = [
+    "siren",
+    "alarm",
+    "gunshot",
+    "explosion",
+    "emergency vehicle",
+    "fire alarm",
+    "car horn",
+    "dog bark"
+]
+
+
+def analyze_audio(file_path):
+    waveform, sr = librosa.load(file_path, sr=16000)
+
+    scores, _, _ = model(waveform)
+    scores_np = scores.numpy()
+
+    mean_scores = np.mean(scores_np, axis=0)
+    top_index = np.argmax(mean_scores)
+
+    sound = class_names[top_index]
+    confidence = float(mean_scores[top_index])
+
+    return sound, confidence
+
+
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Аудио получено, анализирую...")
+    await update.message.reply_text("🎧 Анализирую звук...")
 
-    # ❗ тут позже будет реальный анализ
-    detected_sound = "dog bark"  # пока тест
+    try:
+        audio = update.message.voice or update.message.audio
 
-    if detected_sound in danger_keywords:
-        await update.message.reply_text("⚠️ Опасный звук обнаружен!")
+        if not audio:
+            await update.message.reply_text("Отправь голосовое или аудио")
+            return
 
-# 🤖 создаем приложение
-telegram_app = ApplicationBuilder().token(TOKEN).build()
-telegram_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
+        file = await audio.get_file()
+        file_path = "audio.ogg"
+        await file.download_to_drive(file_path)
 
-# 🌐 webhook endpoint
-@app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-    asyncio.run(telegram_app.process_update(update))
-    return "ok"
+        sound, confidence = analyze_audio(file_path)
 
-# 🟢 главная страница (для проверки)
-@app.route("/")
-def home():
-    return "Айкын работает"
+        if confidence < 0.4:
+            await update.message.reply_text("🔍 Звук не распознан уверенно")
+            return
 
-# 🚀 запуск
-async def main():
-    await telegram_app.initialize()
-    await telegram_app.start()
-    await telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/{TOKEN}")
+        is_danger = any(x in sound.lower() for x in IMPORTANT_SOUNDS)
 
-# ▶️ старт приложения
+        if is_danger:
+            text = f"🚨 ОПАСНО: {sound} ({confidence:.2f})"
+        else:
+            text = f"🟢 Не опасно: {sound} ({confidence:.2f})"
+
+        await update.message.reply_text(text)
+
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка: {e}")
+
+
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
+
+    print("Бот запущен...")
+    app.run_polling()
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
-    app.run(host="0.0.0.0", port=8080)
+    main()
