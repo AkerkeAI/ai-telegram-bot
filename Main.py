@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import tensorflow as tf
 import tensorflow_hub as hub
 import librosa
 import csv
@@ -7,26 +8,30 @@ import csv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
-# токен из Railway
+# ===== TOKEN =====
 TOKEN = os.getenv("TOKEN")
 
 if not TOKEN:
     raise ValueError("TOKEN не найден в Railway Variables")
 
+# ===== MODEL =====
 print("Загружаю модель...")
 model = hub.load("https://tfhub.dev/google/yamnet/1")
+print("Модель готова")
 
-# классы звуков
-class_map_path = model.class_map_path().numpy()
+# ===== CLASS NAMES FIX =====
+class_map_path = tf.keras.utils.get_file(
+    'yamnet_class_map.csv',
+    'https://storage.googleapis.com/audioset/yamnet/yamnet_class_map.csv'
+)
+
 class_names = []
-
 with open(class_map_path, encoding="utf-8") as f:
     reader = csv.reader(f)
     next(reader)
     for row in reader:
         class_names.append(row[2])
 
-print("Модель готова")
 
 IMPORTANT_SOUNDS = [
     "siren",
@@ -40,13 +45,17 @@ IMPORTANT_SOUNDS = [
 ]
 
 
+# ===== AUDIO ANALYSIS =====
 def analyze_audio(file_path):
     waveform, sr = librosa.load(file_path, sr=16000)
 
-    scores, _, _ = model(waveform)
-    scores_np = scores.numpy()
+    waveform = waveform.astype(np.float32)
 
+    scores, embeddings, spectrogram = model(waveform)
+
+    scores_np = scores.numpy()
     mean_scores = np.mean(scores_np, axis=0)
+
     top_index = np.argmax(mean_scores)
 
     sound = class_names[top_index]
@@ -55,6 +64,7 @@ def analyze_audio(file_path):
     return sound, confidence
 
 
+# ===== HANDLER =====
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎧 Анализирую звук...")
 
@@ -66,13 +76,14 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         file = await audio.get_file()
-        file_path = "audio.ogg"
+        file_path = "audio.wav"
+
         await file.download_to_drive(file_path)
 
         sound, confidence = analyze_audio(file_path)
 
         if confidence < 0.4:
-            await update.message.reply_text("🔍 Звук не распознан уверенно")
+            await update.message.reply_text("🔍 Не уверен в распознавании")
             return
 
         is_danger = any(x in sound.lower() for x in IMPORTANT_SOUNDS)
@@ -80,7 +91,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_danger:
             text = f"🚨 ОПАСНО: {sound} ({confidence:.2f})"
         else:
-            text = f"🟢 Не опасно: {sound} ({confidence:.2f})"
+            text = f"🟢 Нормально: {sound} ({confidence:.2f})"
 
         await update.message.reply_text(text)
 
@@ -88,6 +99,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Ошибка: {e}")
 
 
+# ===== MAIN =====
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
