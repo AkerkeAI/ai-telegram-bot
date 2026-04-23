@@ -20,9 +20,11 @@ model = hub.load("https://tfhub.dev/google/yamnet/1")
 print("Модель готова")
 
 # ===== CLASS NAMES FIX =====
+# ===== CLASS NAMES FIX =====
 class_map_path = tf.keras.utils.get_file(
     'yamnet_class_map.csv',
-    'https://githubusercontent.com')
+    'https://githubusercontent.com'
+)
 class_names = []
 with open(class_map_path, encoding="utf-8") as f:
     reader = csv.reader(f)
